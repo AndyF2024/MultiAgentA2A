@@ -1,87 +1,139 @@
-# ============================================================
-# CUSTOM MCP SERVER (REQUIRED BY HOMEWORK)
-# ============================================================
+import sqlite3
+import asyncio
+from fastmcp import FastMCP
+from configuration.config import MCP_PORT, DATABASE_PATH
+from google.adk.tools.mcp_tool import McpToolset, StreamableHTTPConnectionParams
 
-class MCPServer:
-    """
-    Custom MCP server exposing database operations as tools.
-    Matches homework requirements exactly.
-    """
+connection_params = StreamableHTTPConnectionParams(
+    url="http://127.0.0.1:8001/mcp"
+)
 
-    def __init__(self, db: DatabaseSetup):
-        # DO NOT use db.cursor here (created in main thread)
-        self.db = db
+# Instance used ONLY for notebook tests, never passed to agents
+test_mcp_tools = McpToolset(connection_params=connection_params)
 
-        # ✔ open your own connection WITH thread sharing allowed
-        self.conn = sqlite3.connect("support.db", check_same_thread=False)
-        self.cur = self.conn.cursor()
+# Separate fresh instance passed into ADK agents
+agent_mcp_tools = McpToolset(connection_params=connection_params)
 
-    # ---------------------------------------------------
-    # 1. get_customer(customer_id)
-    # ---------------------------------------------------
-    def get_customer(self, customer_id: int):
-        self.cur.execute(
-            "SELECT * FROM customers WHERE id = ?",
-            (customer_id,)
+
+# MCP APP
+mcp_app = FastMCP("SupportMCP")
+
+
+# -----------------------------
+# Database Connection
+# -----------------------------
+def get_conn():
+    conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# -----------------------------
+# MCP TOOLS
+# -----------------------------
+@mcp_app.tool()
+def get_customer(customer_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM customers WHERE id=?", (customer_id,))
+    row = cur.fetchone()
+    conn.close()
+    return {"customer": dict(row) if row else None}
+
+
+@mcp_app.tool()
+def list_customers(status: str = "active", limit: int = 50):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM customers WHERE status=? LIMIT ?", (status, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return {"customers": [dict(r) for r in rows]}
+
+
+@mcp_app.tool()
+def update_customer(customer_id: int, data: dict):
+    conn = get_conn()
+    cur = conn.cursor()
+    for key, value in data.items():
+        cur.execute(f"UPDATE customers SET {key}=? WHERE id=?", (value, customer_id))
+    conn.commit()
+    conn.close()
+    return {"updated": True}
+
+
+@mcp_app.tool()
+def create_ticket(customer_id: int, issue: str, priority: str = "medium"):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO tickets (customer_id, issue, status, priority)
+        VALUES (?, ?, 'open', ?)
+    """, (customer_id, issue, priority))
+    conn.commit()
+    conn.close()
+    return {"ticket_created": True}
+
+
+@mcp_app.tool()
+def get_customer_history(customer_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM tickets WHERE customer_id=?", (customer_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return {"history": [dict(r) for r in rows]}
+
+
+# -----------------------------
+# Run MCP Server
+# -----------------------------
+def start_fast_mcp():
+    asyncio.run(
+        mcp_app.run_async(
+            transport="http",
+            host="127.0.0.1",
+            port=MCP_PORT
         )
-        return self.cur.fetchone()
+    )
 
-    # ---------------------------------------------------
-    # 2. list_customers(status, limit)
-    # ---------------------------------------------------
-    def list_customers(self, status: str, limit: int = 50):
-        self.cur.execute(
-            "SELECT * FROM customers WHERE status = ? LIMIT ?",
-            (status, limit)
-        )
-        return self.cur.fetchall()
+# Test if tools are set up correctly
+# from google.adk.tools.mcp_tool import MCPTool
+# import inspect
+#
+# print("=== MCPTool methods ===")
+# for name, func in inspect.getmembers(MCPTool, inspect.isfunction):
+#     print("-", name)
+#
+# print("\n=== MCPTool attributes ===")
+# print([a for a in dir(MCPTool) if not a.startswith("_")])
 
-    # ---------------------------------------------------
-    # 3. update_customer(customer_id, data)
-    # data is a dict like {"email":"...", "phone":"..."}
-    # ---------------------------------------------------
-    def update_customer(self, customer_id: int, data: dict):
-        set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
-        values = list(data.values()) + [customer_id]
+#Test MCP Connection
+# import asyncio
+#
+# async def test_mcp_connection():
+#     print("Testing MCPToolset → FastMCP connection…")
+#
+#     # Load tools from MCP server
+#     tools = await test_mcp_tools.get_tools()
+#
+#     print(f"✔ Loaded {len(tools)} tools from MCP server")
+#     for t in tools:
+#         print(" -", t.name)
+#
+#     # Try calling one tool
+#     for t in tools:
+#         if t.name == "list_customers":
+#             print("\nCalling list_customers(status='active', limit=3)…")
+#             result = await t.run_async(
+#                 args={"status": "active", "limit": 3},
+#                 tool_context=None
+#             )
+#             print("Result:", result)
+#             break
+#
+# await test_mcp_connection()
 
-        self.cur.execute(
-            f"UPDATE customers SET {set_clause}, updated_at = datetime('now') WHERE id = ?",
-            values
-        )
-        self.db.conn.commit()
-        return {"status": "ok", "updated": data}
+if __name__ == "__main__":
+    start_fast_mcp()
 
-    # ---------------------------------------------------
-    # 4. create_ticket(customer_id, issue, priority)
-    # ---------------------------------------------------
-    def create_ticket(self, customer_id: int, issue: str, priority="medium"):
-        self.cur.execute(
-            """
-            INSERT INTO tickets (customer_id, issue, status, priority, created_at)
-            VALUES (?, ?, 'open', ?, datetime('now'))
-            """,
-            (customer_id, issue, priority)
-        )
-        self.db.conn.commit()
-        return {"status": "ticket_created", "issue": issue, "priority": priority}
-
-    # ---------------------------------------------------
-    # 5. get_customer_history(customer_id)
-    # ---------------------------------------------------
-    def get_customer_history(self, customer_id: int):
-        self.cur.execute(
-            "SELECT * FROM tickets WHERE customer_id = ?",
-            (customer_id,)
-        )
-        return self.cur.fetchall()
-
-    def get_billing_context(self, customer_id: int):
-        """
-        Billing info not stored in DB → gracefully return 'none available'.
-        Required for Scenario 2.
-        """
-        return {
-            "customer_id": customer_id,
-            "billing_available": False,
-            "message": "No billing information exists for this customer."
-        }

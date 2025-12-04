@@ -1,5 +1,9 @@
-# # # Install required packages
-# %pip install --upgrade -q google-genai google-adk==1.9.0 a2a-sdk==0.3.0 python-dotenv aiohttp uvicorn requests mermaid-python nest-asyncio
+import google.adk.tools.mcp_tool.mcp_toolset
+import google.adk.tools.mcp_tool
+import google.adk.tools.mcp_tool.mcp_session_manager
+
+#Run this to install necessary packages
+#%pip install --upgrade -q google-adk google-genai a2a-sdk==0.3.0 python-dotenv aiohttp uvicorn requests mermaid-python nest-asyncio
 
 # Targeted workaround for google-adk==1.9.0 compatibility with a2a-sdk==0.3.0
 # This cell shall be removed when google-adk releases the version next to >1.9.0
@@ -22,6 +26,7 @@ class PatchedClientModule:
 
 patched_module = PatchedClientModule(real_client_module)
 sys.modules['a2a.client.client'] = patched_module  # type: ignore
+
 
 import asyncio
 import logging
@@ -60,6 +65,13 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools import google_search
 
+from mcp import types as mcp_types
+from mcp.server.lowlevel import Server
+from mcp.server.models import InitializationOptions
+
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.mcp_tool.conversion_utils import adk_to_mcp_tool_type
+
 # Set Google Cloud Configuration
 os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "FALSE"      # use Generative AI API, not Vertex endpoint
 os.environ["GOOGLE_CLOUD_PROJECT"] = "multiagenta2a"   # <-- your project id here, NO brackets
@@ -81,8 +93,7 @@ if 'google.colab' in sys.modules:
 
     auth.authenticate_user(project_id=os.environ['GOOGLE_CLOUD_PROJECT'])
 
-    # Setup logging
-    logging.basicConfig(
-        level=logging.ERROR,
-        format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-    )
+LOG_LEVEL = "warning"
+
+# Install fastmcp
+#!pip install fastmcp

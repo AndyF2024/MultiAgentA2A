@@ -1,15 +1,86 @@
-class A2ASimpleClient:
-    """A2A Simple to call A2A servers."""
+# ============================================================
+# PHASE 6 — SIMPLE A2A CLIENT + CLEAN OUTPUT EXTRACTION
+# ============================================================
+from configuration.logging_config import setup_logging
 
+import httpx
+import json
+from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
+from a2a.client import ClientConfig, ClientFactory, create_text_message_object
+from a2a.types import AgentCard, TransportProtocol
+
+
+# -----------------------------------------------------------
+# Helper: Extract structuredContent from ADK task output
+# -----------------------------------------------------------
+def extract_structured(task):
+    """
+    Universal extractor for Router, DataAgent, SupportAgent
+    Handles:
+    - .root.data (DataAgent structured)
+    - .root.text containing JSON
+    - plain text fallback
+    """
+    try:
+        art = task.artifacts[0]
+        part = art.parts[0]
+        root = part.root
+
+        # ----------------------------------------------------
+        # 1) Case: DataAgent structuredContent
+        # ----------------------------------------------------
+        if hasattr(root, "data") and isinstance(root.data, dict):
+            data = root.data
+            if (
+                "response" in data
+                and isinstance(data["response"], dict)
+                and "structuredContent" in data["response"]
+            ):
+                return data["response"]["structuredContent"]
+
+            # Router sometimes returns dict in .data
+            return data
+
+        # ----------------------------------------------------
+        # 2) Case: Router/Support: text containing JSON
+        # ----------------------------------------------------
+        if hasattr(root, "text") and isinstance(root.text, str):
+            text = root.text.strip()
+
+            # Remove ```json fences
+            if text.startswith("```"):
+                text = text.strip("`")
+                if text.startswith("json"):
+                    text = text[4:].strip()
+
+            # Try JSON decode
+            try:
+                return json.loads(text)
+            except Exception:
+                return text  # plain text fallback
+
+    except Exception:
+        pass
+
+    return None
+
+
+
+# -----------------------------------------------------------
+# A2ASimpleClient — fully corrected version
+# -----------------------------------------------------------
+class A2ASimpleClient:
     def __init__(self, default_timeout: float = 240.0):
-        self._agent_info_cache: dict[
-            str, dict[str, Any] | None
-        ] = {}  # Cache for agent metadata
+        self._agent_info_cache = {}
         self.default_timeout = default_timeout
 
-    async def create_task(self, agent_url: str, message: str) -> str:
-        """Send a message following the official A2A SDK pattern."""
-        # Configure httpx client with timeout
+    async def create_task(self, agent_url: str, message, clean=True):
+        """
+        agent_url : http://127.0.0.1:PORT
+        message   : str OR dict
+        clean     : if True, returns structured JSON instead of ADK dump
+        """
+
         timeout_config = httpx.Timeout(
             timeout=self.default_timeout,
             connect=10.0,
@@ -19,25 +90,21 @@ class A2ASimpleClient:
         )
 
         async with httpx.AsyncClient(timeout=timeout_config) as httpx_client:
-            # Check if we have cached agent card data
-            if (
-                agent_url in self._agent_info_cache
-                and self._agent_info_cache[agent_url] is not None
-            ):
-                agent_card_data = self._agent_info_cache[agent_url]
-            else:
-                # Fetch the agent card
-                agent_card_response = await httpx_client.get(
-                    f'{agent_url}{AGENT_CARD_WELL_KNOWN_PATH}'
-                )
-                agent_card_data = self._agent_info_cache[agent_url] = (
-                    agent_card_response.json()
-                )
 
-            # Create AgentCard from data
-            agent_card = AgentCard(**agent_card_data)
+            # ---------------------------
+            # Load AgentCard (cached)
+            # ---------------------------
+            if agent_url not in self._agent_info_cache:
+                card_resp = await httpx_client.get(
+                    f"{agent_url}{AGENT_CARD_WELL_KNOWN_PATH}"
+                )
+                self._agent_info_cache[agent_url] = card_resp.json()
 
-            # Create A2A client with the agent card
+            agent_card = AgentCard(**self._agent_info_cache[agent_url])
+
+            # ---------------------------
+            # Create A2A client
+            # ---------------------------
             config = ClientConfig(
                 httpx_client=httpx_client,
                 supported_transports=[
@@ -47,31 +114,38 @@ class A2ASimpleClient:
                 use_client_preference=True,
             )
 
-            factory = ClientFactory(config)
-            client = factory.create(agent_card)
+            client = ClientFactory(config).create(agent_card)
 
-            # Create the message object
-            message_obj = create_text_message_object(content=message)
+            # Convert dict → JSON string
+            if isinstance(message, dict):
+                message = json.dumps(message)
 
-            # Send the message and collect responses
+            msg = create_text_message_object(content=message)
+
+            # ---------------------------
+            # Send message
+            # ---------------------------
             responses = []
-            async for response in client.send_message(message_obj):
+            async for response in client.send_message(msg):
                 responses.append(response)
 
-            # The response is a tuple - get the first element (Task object)
-            if (
-                responses
-                and isinstance(responses[0], tuple)
-                and len(responses[0]) > 0
-            ):
-                task = responses[0][0]  # First element of the tuple
+            if not responses or not isinstance(responses[0], tuple):
+                return "No response received"
 
-                # Extract text: task.artifacts[0].parts[0].root.text
-                try:
-                    return task.artifacts[0].parts[0].root.text
-                except (AttributeError, IndexError):
-                    return str(task)
+            task = responses[0][0]
 
-            return 'No response received'
+            # ---------------------------
+            # Clean extraction (preferred)
+            # ---------------------------
+            if clean:
+                cleaned = extract_structured(task)
+                return cleaned if cleaned is not None else str(task)
 
+            # ---------------------------
+            # Raw fallback
+            # ---------------------------
+            return str(task)
+
+
+# GLOBAL CLIENT INSTANCE
 a2a_client = A2ASimpleClient()

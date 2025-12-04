@@ -1,3 +1,7 @@
+import sys
+sys.path.append('/content/drive/MyDrive/Applied Agentic AI/HW5')
+import database_setup
+
 from database_setup import DatabaseSetup
 
 # 1. Create DB helper pointing to "support.db"

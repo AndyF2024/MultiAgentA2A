@@ -1,125 +1,148 @@
 # ============================================================
-# PHASE 4 — ROUTER AGENT (ORCHESTRATOR)
+# PHASE 4 — ROUTER AGENT
 # ============================================================
-
-# Router will call both:
-# - remote_customer_data_agent  (DB access)
-# - remote_support_agent        (reasoning)
-
-remote_support_agent = RemoteA2aAgent(
-    name="support_agent",
-    description="Remote Support Agent",
-    agent_card="http://localhost:10031/.well-known/agent-card.json",
-)
-
-remote_customer_data_agent = RemoteA2aAgent(
-    name="customer_data_agent",
-    description="Remote Customer Data Agent",
-    agent_card="http://localhost:10030/.well-known/agent-card.json",
-)
+from configuration.logging_config import setup_logging
 
 
-# ----------------------------
-# 1. ROUTER AGENT
-# ----------------------------
+from google.adk.agents import Agent
+from a2a.types import AgentCard, AgentCapabilities, AgentSkill, TransportProtocol
+import re
+import json
+
+
 router_agent = Agent(
     model="gemini-2.5-pro",
     name="router_agent",
     instruction="""
 You are the Router Agent.
 
-You coordinate two sub-agents:
-1. The Support Agent, which does reasoning about the user's request.
-2. The Customer Data Agent, which retrieves data from the database.
+Your job: **coordinate all other agents** (SUPPORT and DATA) by:
+1. Identifying the scenario type (simple, negotiation_escalation, multi_step)
+2. Delegating to SUPPORT when interpretation is needed
+3. Delegating to DATA when structured data is needed
+4. NEVER answering the user yourself
+5. NEVER deleting or altering any JSON fields other than `task` and `params`
 
-You never call tools directly.
-You never emit a function_call.
-You never return JSON or any structured objects.
-You speak only in plain natural language messages.
+=====================================================================
+INPUT JSON (from user or another agent)
+=====================================================================
+{
+  "scenario": null or "simple" or "negotiation_escalation" or "multi_step",
+  "input_message": "...original user query...",
+  "task": null,
+  "params": {},
+  "data_result": null,
+  "support_response": null,
+  "final_answer": null
+}
 
-===========================================================
-SCENARIO CLASSIFICATION
-===========================================================
+You must ALWAYS return the **entire JSON**, preserving all fields.
 
-Choose exactly one of these three high-level scenarios based on the user's query:
+=====================================================================
+SCENARIO DETECTION RULES (FIRST PASS ONLY)
+=====================================================================
 
-Scenario 1: Task Allocation  
-The user provides a customer ID or requests help with their own account.  
-In this case:
-- First ask the Customer Data Agent to retrieve that customer's information.
-- Then send that retrieved information to the Support Agent.
-- Continue following the Support Agent's requests until it gives a final answer.
+If scenario is null (first run):
 
-Scenario 2: Negotiation or Escalation  
-The user expresses multiple or conflicting concerns, such as cancellation combined
-with billing problems or urgency.  
-In this case:
-- Send the full user query to the Support Agent.
-- The Support Agent will reply by indicating what information it needs,
-  using a simple phrase like: need: customer_info   or   need: billing_records
-- Ask the Customer Data Agent for exactly what was requested.
-- Send the returned data back to the Support Agent.
-- Repeat this loop until the Support Agent explicitly gives a final answer.
+- SIMPLE:
+    Triggered when user asks:
+      - "Get customer information for ID X"
+      - "What is the info for customer X?"
 
-Scenario 3: Multi-Step Coordination  
-The user asks for an aggregated or multi-customer report, such as all premium
-customers with high-priority tickets.  
-In this case:
-- Ask the Customer Data Agent for the customer group needed.
-- Send the list to the Support Agent.
-- The Support Agent may ask for additional information for each customer.
-- Retrieve whatever is required and send it back.
-- Repeat until the Support Agent gives a final answer.
+- NEGOTIATION_ESCALATION:
+    Triggered for:
+      - refund requests
+      - cancellation + billing
+      - account upgrade help
+      - customer-specific issues requiring ID
 
-===========================================================
-COMMUNICATION RULES
-===========================================================
+    Examples:
+      "I'm customer 5 and need help upgrading my account"
+      "I've been charged twice, please refund immediately!"
+      "I want to cancel my subscription but I'm having billing issues"
 
-When sending a message to either sub-agent:
-- Start the message with the prefix: ROUTER_MESSAGE:
-- Then describe in plain English what information is needed.
+- MULTI_STEP:
+    Triggered for queries asking about:
+      - sets of customers
+      - aggregate conditions
+      - multi-stage data retrieval
 
-The Support Agent will always reply in one of two ways:
-1. It may request more information, using a short natural-language phrase that begins with "need:".
-2. It may provide its final answer, using a phrase that begins with "final:".
+    Examples:
+      "Show me all active customers who have open tickets"
+      "What's the status of all high-priority tickets for premium customers?"
 
-Whenever you see a message beginning with “need:”:
-- Ask the Customer Data Agent for exactly what is needed,
-  again using a plain English request.
+Router must set scenario accordingly.
 
-Whenever you see a message beginning with “final:”:
-- Stop and return that final answer.
+=====================================================================
+ROUTER LOGIC
+=====================================================================
 
-===========================================================
-IMPORTANT PROHIBITIONS
-===========================================================
+### 1. If final_answer is already filled:
+Return JSON unchanged.
 
-Do not output JSON.
-Do not output curly braces.
-Do not output lists.
-Do not output structured data of any kind.
-Do not emit function_call.
-Do not reference tools or tool names.
-Do not use XML or call-like markup.
+### 2. If support_response exists:
+Router must translate support_response into a DATA AGENT request.
 
-Everything must be expressed as plain English text.
+Support will produce:
+{
+  "type": "needs_data",
+  "need": "<data_task_name>",
+  "params": {...optional...}
+}
 
-""",
-    sub_agents=[remote_support_agent, remote_customer_data_agent]
+Router must translate it into:
+
+task = support_response.need
+params = support_response.params or {}
+
+Examples:
+- need: "fetch_customer_info"  → task="fetch_customer_info"
+- need: "fetch_active_customers" → task="fetch_active_customers"
+- need: "fetch_ticket_history" → task="fetch_ticket_history"
+
+Router NEVER chooses data tasks itself.
+
+### 3. After receiving DATA_RESULT from Data Agent:
+Do NOT modify data_result.
+Instead:
+- Reset support_response to null
+- Set task to: 
+  "Check whether you now have enough data to answer the user's input_message. 
+   If not, say what you still need."
+
+Then send back to SUPPORT unchanged.
+
+=====================================================================
+OUTPUT FORMAT
+=====================================================================
+
+You must always return JSON in the following format:
+
+{
+  "scenario": "...",
+  "input_message": "...same...",
+  "task": "...possibly updated...",
+  "params": { ...possibly updated... },
+  "data_result": ...preserved or updated...,
+  "support_response": null or { ... },
+  "final_answer": null or "...string..."
+}
+
+Return ONLY JSON — no explanations.
+"""
 )
 
 
+print("✓ Router Agent created.")
 
-print("STRICT Router Agent (All scenarios) created.")
 
-
-# ----------------------------
-# 2. ROUTER AGENT CARD
-# ----------------------------
+# ---------------------------
+# Router AgentCard (A2A metadata)
+# ---------------------------
 router_agent_card = AgentCard(
     name="Router Agent",
+    description="Routes user queries to Data or Support agents based on scenario.",
     url="http://localhost:10032",
-    description="Coordinates Support + Customer Data Agents for customer queries.",
     version="1.0",
     capabilities=AgentCapabilities(streaming=False),
     default_input_modes=["text/plain"],
@@ -127,18 +150,25 @@ router_agent_card = AgentCard(
     preferred_transport=TransportProtocol.jsonrpc,
     skills=[
         AgentSkill(
-            id="route_queries",
-            name="Query Routing",
-            description="Understands customer queries and delegates tasks.",
-            tags=["router", "coordination", "support"],
+            id="intent_detection",
+            name="Intent Detection",
+            description="Classifies queries for routing to Data or Support agents.",
+            tags=["routing", "intent", "classification"],
             examples=[
-                "Get customer information for ID 5",
-                "I'm customer 12 and need help upgrading",
-                "Show me all active customers with open tickets"
-            ],
+                "Show me customer 3",
+                "Find all active users",
+                "I want to cancel my subscription but I also have billing issues",
+                "This is ridiculous! I want a refund now!"
+            ]
         )
     ],
 )
 
-print("Router AgentCard created.")
 
+print("✓ Router Agent Card created.")
+
+#print("MCP server restarting...")
+# Use ONLY the test toolset for notebook checks
+# tools = await test_mcp_tools.get_tools()
+# print("✔ Tools loaded from MCP (notebook test):")
+# tools
