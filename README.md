@@ -1,73 +1,121 @@
-# MultiAgentA2A
+# Multi-Agent Customer Support System (A2A + MCP)
 
-Multi-Agent A2A Customer Support System (HW5)
+This project implements a multi-agent customer support system using:
 
-This project implements a three-agent customer support system using Google A2A (Agent-to-Agent) communication and an MCP-backed database. The system demonstrates agent coordination, multi-step reasoning, and multi-message workflows across several realistic customer support scenarios.
+- Google ADK for agent-to-agent (A2A) communication
+- FastMCP for Model Context Protocol tool integration
+- Gemini models for reasoning and routing
+- SQLite as a persistent backend
+- Custom MCP tools for database operations
 
-==============================================================================================================================================================
-# System Overview
-1. Customer Data Agent (MCP-Backed)
+The system demonstrates structured multi-agent coordination, multi-step reasoning, 
+and tool-calling through a clean JSON-based protocol.
 
-Executes database operations:
+# Overview
 
-Get customer info
+The architecture includes three independent agents:
 
-List customers
+1. Router Agent  
+   - Classifies user intent  
+   - Routes tasks to Support or Data agents  
+   - Coordinates multi-step flows  
 
-Get ticket history
+2. Support Agent  
+   - Handles reasoning, negotiation, and escalation  
+   - Determines when more data is needed  
+   - Produces final user-facing responses  
 
-Create tickets
+3. Customer Data Agent  
+   - Executes DB queries via MCP tools  
+   - Never generates natural language  
+   - Returns structured JSON outputs only  
 
-Billing placeholder lookup
+An MCP server (FastMCP) exposes database tools:
+- get_customer
+- list_customers
+- update_customer
+- create_ticket
+- get_customer_history
 
-Never reasons about the query.
+# Project Structure
 
-Only returns raw data.
+MultiAgentA2A/
+│
+├── a2a_runtime/
+│   └── run_query.py
+│
+├── agents/
+│   ├── customer_data_agent.py
+│   ├── support_agent.py
+│   └── router_agent.py
+│
+├── client/
+│   ├── all_server.py
+│   └── simpleClient.py
+│
+├── configuration/
+│   ├── config.py
+│   └── logging_config.py
+│
+├── Data/
+│   └── database_setup.py
+│
+├── mcp_server/
+│   ├── mcp_server.py
+│   └── database_setup.py
+│
+├── notebook/
+│   └── Multi_Agent_HW5.ipynb
+│
+├── tests/
+│   ├── test_manual_agent_flow.py
+│   └── test_pipeline.py
+│
+└── requirements.txt
 
-2. Support Agent (Reasoning Agent)
+# Installation
 
-Interprets user queries.
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 
-Determines what information is needed next.
+# Running the MCP Server
 
-Uses structured JSON messages:
+python mcp_server/mcp_server.py
 
-need: ...
+# Running All A2A Agents
 
-final_message: ...
+python client/all_server.py
 
-Never calls tools directly.
+# Running Tests
 
-3. Router Agent (Coordinator)
+# Manual multi-agent step-by-step:
+python tests/test_manual_agent_flow.py
 
-Classifies each query into one of three high-level scenarios:
+# Full pipeline tests:
+python tests/test_pipeline.py
 
-Task Allocation
+# Running a Query (via pipeline)
 
-Negotiation / Escalation
+from a2a_runtime.run_query import run_query
+import asyncio
 
-Multi-Step Coordination
+asyncio.run(run_query("Get customer information for ID 5"))
 
-Forwards user messages and data between agents.
+# Example Queries
 
-==============================================================================================================================================================
-# Key Features
+"Get customer information for ID 5"
+"I'm customer 3 and need help upgrading my account"
+"I've been charged twice — please refund immediately"
+"Show me all active customers who have open tickets"
 
-Full MCP server backing SQLite database
+# Notes
 
-Three independent A2A agent servers
+The system emphasizes:
+- Stable multi-step A2A routing
+- Deterministic tool usage through MCPToolset
+- Clear separation of reasoning and data access
+- Structured JSON state propagation
 
-Multi-step coordination loops
-
-Isolation of reasoning vs. execution
-
-Clean message-based interfaces
-
-Notebook demonstrating behavior
-
-The simple scenario (direct customer lookup) runs end-to-end.
-More complex multi-step scenarios highlight the difficulty of keeping the Router consistently forwarding intermediate results — an expected challenge of LLM-driven orchestration.
-
-Maintains the multi-turn loop until the Support Agent produces a final answer.
-
-Uses only plain text to communicate (to avoid unintended tool calls).
+The Jupyter notebook demonstrates the full setup and execution flow, including 
+database initialization, MCP server setup, and multi-agent coordination.
