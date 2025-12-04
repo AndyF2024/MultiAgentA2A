@@ -37,42 +37,6 @@ An MCP server (FastMCP) exposes database tools:
 - create_ticket
 - get_customer_history
 
-# Project Structure
-
-MultiAgentA2A/
-│
-├── a2a_runtime/
-│   └── run_query.py
-│
-├── agents/
-│   ├── customer_data_agent.py
-│   ├── support_agent.py
-│   └── router_agent.py
-│
-├── client/
-│   ├── all_server.py
-│   └── simpleClient.py
-│
-├── configuration/
-│   ├── config.py
-│   └── logging_config.py
-│
-├── Data/
-│   └── database_setup.py
-│
-├── mcp_server/
-│   ├── mcp_server.py
-│   └── database_setup.py
-│
-├── notebook/
-│   └── Multi_Agent_HW5.ipynb
-│
-├── tests/
-│   ├── test_manual_agent_flow.py
-│   └── test_pipeline.py
-│
-└── requirements.txt
-
 # Installation
 
 python -m venv venv
